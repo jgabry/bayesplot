@@ -71,14 +71,15 @@
 #'                + (1 + floor | county),
 #'   data = radon,
 #'   iter = 1000,
-#'   chains = 2  # ,cores = 2
+#'   chains = 2,
+#'   cores = 2
 #'  )
 #' y <- radon$log_radon
 #' yrep <- posterior_predict(fit)
 #'
-#' loo1 <- loo(fit, save_psis = TRUE, cores = 2)
+#' loo1 <- loo(fit, save_psis = TRUE, cores = 4)
 #' psis1 <- loo1$psis_object
-#' lw <- weights(psis1)
+#' lw <- weights(psis1) # normalized log weights
 #'
 #' # marginal predictive check using LOO probability integral transform
 #' color_scheme_set("orange")
@@ -138,7 +139,7 @@ ppc_loo_pit_overlay <- function(y,
   } else {
     suggested_package("rstantools")
     y <- validate_y(y)
-    yrep <- validate_yrep(yrep, y)
+    yrep <- validate_predictions(yrep, length(y))
     stopifnot(identical(dim(yrep), dim(lw)))
     pit <- rstantools::loo_pit(object = yrep, y = y, lw = lw)
   }
@@ -175,7 +176,7 @@ ppc_loo_pit_overlay <- function(y,
       kernel = kernel,
       n = n_dens,
       na.rm = TRUE) +
-    scale_color_ppc_dist(labels = c("PIT", "Unif")) +
+    scale_color_ppc(labels = c("PIT", "Unif")) +
     scale_x_continuous(
       limits = c(.1, .9),
       expand = expansion(0, 0),
@@ -210,7 +211,7 @@ ppc_loo_pit_qq <- function(y,
   } else {
     suggested_package("rstantools")
     y <- validate_y(y)
-    yrep <- validate_yrep(yrep, y)
+    yrep <- validate_predictions(yrep, length(y))
     stopifnot(identical(dim(yrep), dim(lw)))
     pit <- rstantools::loo_pit(object = yrep, y = y, lw = lw)
   }
@@ -269,8 +270,6 @@ ppc_loo_pit <-
   }
 
 
-
-
 #' @rdname PPC-loo
 #' @export
 #' @template args-prob-prob_outer
@@ -308,8 +307,9 @@ ppc_loo_intervals <-
            ...,
            prob = 0.5,
            prob_outer = 0.9,
+           alpha = 0.33,
            size = 1,
-           fatten = 3,
+           fatten = 2.5,
            order = c("index", "median")) {
 
     check_ignored_arguments(...)
@@ -326,7 +326,7 @@ ppc_loo_intervals <-
       }
     } else {
       suggested_package("loo", min_version = "2.0.0")
-      yrep <- validate_yrep(yrep, y)
+      yrep <- validate_predictions(yrep, length(y))
       if (!is.null(subset)) {
         stopifnot(length(y) >= length(subset))
         y <- y[subset]
@@ -348,24 +348,46 @@ ppc_loo_intervals <-
     if (order_by_median) {
       x <- reorder(x, intervals[, 2])
     }
-
-    graph <- .ppc_intervals(
-      data = .loo_intervals_data(y, x, intervals),
-      grouped = FALSE,
-      style = "intervals",
-      size = size,
-      fatten = fatten,
-      x_lab = "Data point (index)"
-    )
-
-    if (!order_by_median) {
-      return(graph)
+    xy_labs <- if (order_by_median) {
+      labs(x = "Ordered by median", y = NULL)
+    } else {
+      intervals_axis_labels(has_x = FALSE)
     }
 
-    graph +
-      xlab("Ordered by median") +
-      xaxis_text(FALSE) +
-      xaxis_ticks(FALSE)
+    data <- .loo_intervals_data(y, x, intervals)
+    ggplot(data) +
+      intervals_inner_aes(
+        needs_y = TRUE,
+        color = "yrep",
+        fill = "yrep"
+      ) +
+      geom_linerange(
+        mapping = intervals_outer_aes(color = "yrep"),
+        alpha = alpha,
+        size = size
+      ) +
+      geom_pointrange(
+        shape = 21,
+        stroke = 0.5,
+        size = size,
+        fatten = fatten
+      ) +
+      geom_point(
+        mapping = aes_(
+          y = ~ y_obs,
+          color = "y",
+          fill = "y"
+        ),
+        shape = 21,
+        stroke = 0.5,
+        size = 1
+      ) +
+      scale_color_ppc() +
+      scale_fill_ppc() +
+      bayesplot_theme_get() +
+      xy_labs +
+      xaxis_text(!order_by_median) +
+      xaxis_ticks(!order_by_median)
   }
 
 #' @rdname PPC-loo
@@ -395,7 +417,7 @@ ppc_loo_ribbon <-
       }
     } else {
       suggested_package("loo", min_version = "2.0.0")
-      yrep <- validate_yrep(yrep, y)
+      yrep <- validate_predictions(yrep, length(y))
       if (!is.null(subset)) {
         stopifnot(length(y) >= length(subset))
         y <- y[subset]
@@ -412,14 +434,38 @@ ppc_loo_ribbon <-
         probs = sort(c(a, 0.5, 1 - a))
       )$value))
     }
-    .ppc_intervals(
-      data = .loo_intervals_data(y, x = seq_along(y), intervals),
-      grouped = FALSE,
-      style = "ribbon",
-      size = size,
-      alpha = alpha,
-      x_lab = "Data point (index)"
-    )
+
+    data <- .loo_intervals_data(y, x = seq_along(y), intervals)
+    ggplot(data) +
+      intervals_inner_aes(fill = "yrep", color = "yrep") +
+      geom_ribbon(
+        mapping = intervals_outer_aes(fill = "yrep", color = "yrep"),
+        alpha = alpha,
+        size = 0.05
+      ) +
+      geom_ribbon(
+        mapping = intervals_outer_aes(),
+        alpha = 1,
+        size = 0.05,
+        fill = NA,
+        color = get_color("m")
+      ) +
+      geom_ribbon(size = 0.05) +
+      geom_line(
+        mapping = aes_(y = ~ m),
+        color = get_color("m"),
+        size = size
+      ) +
+      geom_blank(aes_(fill = "y")) +
+      geom_line(
+        aes_(y = ~ y_obs, color = "y"),
+        size = 0.5,
+        alpha = 2/3
+      ) +
+      scale_color_ppc() +
+      scale_fill_ppc(values = c(NA, get_color("l"))) +
+      intervals_axis_labels(has_x = FALSE) +
+      bayesplot_theme_get()
   }
 
 
@@ -428,7 +474,7 @@ ppc_loo_ribbon <-
 .loo_intervals_data <- function(y, x, intervals) {
   stopifnot(length(y) == nrow(intervals), length(x) == length(y))
 
-  data.frame(
+  tibble::tibble(
     y_id = seq_along(y),
     y_obs = y,
     x = x,
@@ -440,6 +486,7 @@ ppc_loo_ribbon <-
 }
 
 # subset a psis_object without breaking it
+# (FIXME: use function from loo package when subset.psis() method becomes available)
 .psis_subset <- function(psis_object, subset) {
   stopifnot(all(subset == as.integer(subset)))
   if (length(subset) > dim(psis_object)[2]) {
