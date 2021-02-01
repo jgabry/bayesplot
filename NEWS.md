@@ -4,16 +4,14 @@
 
 Items for next release go here
 
-
+* Size of points and interval lines can set in 
+  `mcmc_intervals(..., outer_size, inner_size, point_size)`. (#215, #228, #229) 
+ 
 # bayesplot 1.8.0
 
 ### Bug fixes
 
 * `mcmc_areas()` tries to use less vertical blank space. (#218, #230)
-
-* Fix bug in `color_scheme_view()` minimal theme (#213).
-
-* Fix error in `mcmc_acf()` for certain input types. (#244, #245, @hhau)
 
 ### New features
 
