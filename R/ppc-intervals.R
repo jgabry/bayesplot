@@ -41,6 +41,16 @@
 #'    Same as `ppc_intervals()` and `ppc_ribbon()`, respectively, but a
 #'    separate plot (facet) is generated for each level of a grouping variable.
 #'   }
+#'   \item{`ppc_ecdf_intervals(), ppc_ecdf_intervals_difference()`}{
+#'    `100*prob`% central simultaneous confidence intervals for the ECDF of the
+#'    probability integral transformed sample at `K` evenly spaced evaluation
+#'    points. If `y` and `yrep` are provided, the PIT values of `y` are computed
+#'    with regards to `yrep`. PIT values can also be provided directly as `pit`.
+#'    `ppc_ecdf_intervals()' plots the ECDF with the desired simultaneous
+#'    confidence intervals, whereas `ppc_ecdf_intervals_difference()` in
+#'    addition substracts the value of the theoretical CDF from the ECDF at each
+#'    evaluation point, resulting in a more dynamic range especially for large
+#'    samples.
 #' }
 #'
 #' @examples
@@ -50,6 +60,8 @@
 #' color_scheme_set("brightblue")
 #' ppc_ribbon(y, yrep)
 #' ppc_intervals(y, yrep)
+#' ppc_ecdf_intervals(y, yrep)
+#' ppc_ecdf_intervals_difference(y, yrep)
 #'
 #' # change x axis to y values (instead of indices) and add x = y line
 #' ppc_intervals(y, yrep, x = y) + abline_01()
@@ -128,6 +140,262 @@ ppc_intervals <- function(y, yrep, x = NULL, ..., prob = 0.5, prob_outer = 0.9,
     style = "intervals",
     x_lab = label_x(x)
   )
+}
+
+#' @export
+#' @rdname PPC-intervals
+#' @param pit For 'ppc_ecdf_intervals' and 'ppc_ecdf_intervals_difference', the
+#'   PIT values of one or more samples can be provided directly causing'y' and
+#'   'yrep' to be ignored.
+#' @param K For 'ppc_ecdf_intervals' and 'ppc_ecdf_intervals_difference',
+#'   number of uniformly spaced evaluation points for the ECDF or ECDFs. Affects
+#'   the granularity of the plot and can significantly speed up the computation
+#'   of the simultaneous confidence bands. Defaults to 'length(y)',
+#'   'K = ncol(yrep)', or lastly to 'K = ncol(pit)' depending on which one is
+#'   provided.
+ppc_ecdf_intervals <- function(
+  y,
+  yrep,
+  pit,
+  gamma,
+  gamma_outer,
+  K,
+  ...,
+  prob = 0.5,
+  prob_outer = 0.9,
+  size = 1,
+  alpha = 0.33
+) {
+  check_ignored_arguments(...)
+  data <- .ppc_ecdf_intervals_data(y, yrep, pit, K)
+  if (missing(K)) {
+    K <- max(data$y_id) - 1
+  }
+  # Infer sample length
+  if (!missing(y)) {
+    N <- length(y)
+  } else if (!missing(yrep)) {
+    N <- ncol(yrep)
+  } else {
+    N <- ncol(pit)
+  }
+  # Infer number of chains
+  L <- max(data$rep_id) + any(data$is_y)
+  # Adjust confidence intervals for simultaneous coverage
+  if (missing(gamma_outer)) {
+    gamma_outer <- adjust_gamma(
+      N = N,
+      L = L,
+      K = K,
+      conf_level = prob_outer
+    )
+  }
+  if (missing(gamma)) {
+    gamma <- adjust_gamma(
+      N = N,
+      L = L,
+      K = K,
+      conf_level = prob
+    )
+  }
+  # Compute limits
+  limits <- ecdf_intervals(
+    N = N,
+    L = L,
+    K = K,
+    gamma = gamma)
+  limits_outer <- ecdf_intervals(
+    N = N,
+    L = L,
+    K = K,
+    gamma = gamma_outer)
+  # determine evaluation points.
+  z <- 0:K / K
+  # construct figure
+  fig <- ggplot(data) +
+    geom_ribbon(
+      data = data.frame(limits_outer),
+      aes_(
+        x = c(0, rep(z[2:(K + 1)], each = 2)),
+        ymax = ~ upper / N,
+        ymin = ~ lower / N,
+        color = "theoretical CDF",
+        fill = "theoretical CDF"
+      ),
+      alpha = alpha,
+      size = size) +
+    geom_ribbon(
+      data = data.frame(limits),
+      aes_(
+        x = c(0, rep(z[2:(K + 1)], each = 2)),
+        ymax = ~ upper / N,
+        ymin = ~ lower / N,
+        color = "theoretical CDF",
+        fill = "theoretical CDF"
+      ),
+      alpha = alpha,
+      size = size)
+  # add sample ECDF
+  if (any(data$is_y)) {
+    fig <- fig + geom_step(
+      data = function(x) dplyr::filter(x, .data$is_y),
+      aes_(x = z, y = ~ value, color = "sample ECDF"),
+      size = size
+    )
+  }
+  # add
+  if (any(!data$is_y)) {
+    fig <- fig + geom_step(
+        data = function(x) dplyr::filter(x, !.data$is_y),
+        aes_(x = rep(z, each = L), group = ~ rep_id,
+             y = ~ value, color = ~ rep_label),
+        size = size
+      )
+  }
+  fig + scale_y_continuous(breaks = c(0, 0.5, 1)) +
+    scale_color_manual(
+      name = "",
+      values = set_names(
+        get_color(c("lh", "dh")),
+        c("theoretical CDF", "sample ECDF")),
+      labels = c(
+        "theoretical CDF" = expression(italic("theoretical CDF")),
+        "sample ECDF" = expression(italic("sample ECDF"))
+      )
+    ) +
+    scale_fill_manual(
+      name = "",
+      values = c("theoretical CDF" = get_color("l"),
+                 "sample ECDF" = NA),
+      labels = c(
+        "theoretical CDF" = expression(italic("theoretical CDF")),
+        "sample ECDF" = expression(italic("sample ECDF"))
+      )
+    ) +
+    yaxis_title(FALSE) +
+    xaxis_title(FALSE) +
+    yaxis_ticks(FALSE) +
+    bayesplot_theme_get()
+}
+
+#' @export
+#' @rdname PPC-intervals
+ppc_ecdf_intervals_difference <- function(
+  y,
+  yrep,
+  pit,
+  gamma,
+  gamma_outer,
+  K,
+  ...,
+  prob = 0.5,
+  prob_outer = 0.9,
+  size = 1,
+  alpha = 0.33
+) {
+  check_ignored_arguments(...)
+  data <- .ppc_ecdf_intervals_data(y, yrep, pit, K)
+  if (missing(K)) {
+    K <- max(data$y_id) - 1
+  }
+  if (!missing(y)) {
+    N <- length(y)
+  } else if (!missing(yrep)) {
+    N <- ncol(yrep)
+  } else {
+    N <- ncol(pit)
+  }
+  L <- max(data$rep_id) + any(data$is_y)
+  if (missing(gamma_outer)) {
+    gamma_outer <- adjust_gamma(
+      N = N,
+      L = L,
+      K = K,
+      conf_level = prob_outer
+    )
+  }
+  if (missing(gamma)) {
+    gamma <- adjust_gamma(
+      N = N,
+      L = L,
+      K = K,
+      conf_level = prob
+    )
+  }
+  limits <- ecdf_intervals(
+    N = N,
+    L = L,
+    K = K,
+    gamma = gamma)
+  limits_outer <- ecdf_intervals(
+    N = N,
+    L = L,
+    K = K,
+    gamma = gamma_outer)
+  z <- seq(0,1, length.out = K + 1)
+  fig <- ggplot(data) +
+    geom_ribbon(
+      data = data.frame(limits_outer),
+      aes_(
+        x = c(0, rep(z[2:(K + 1)], each = 2)),
+        ymax = ~ upper / N - c(rep(z[1:K], each = 2), 1),
+        ymin = ~ lower / N - c(rep(z[1:K], each = 2), 1),
+        color = "theoretical CDF",
+        fill = "theoretical CDF"
+      ),
+      alpha = alpha,
+      size = size) +
+    geom_ribbon(
+      data = data.frame(limits),
+      aes_(
+        x = c(0, rep(z[2:(K + 1)], each = 2)),
+        ymax = ~ upper / N - c(rep(z[1:K], each = 2), 1),
+        ymin = ~ lower / N - c(rep(z[1:K], each = 2), 1),
+        color = "theoretical CDF",
+        fill = "theoretical CDF"
+      ),
+      alpha = alpha,
+      size = size)
+  if (any(data$is_y)) {
+    fig <- fig + geom_step(
+      data = function(x) dplyr::filter(x, .data$is_y),
+      aes_(x = z, y = ~ value - z, color = "sample ECDF")
+    )
+  }
+  if (any(!data$is_y)) {
+    fig <- fig + geom_step(
+        data = function(x) dplyr::filter(x, !.data$is_y),
+        aes_(
+          x = rep(z, each = L)),
+          y = ~ value - rep(z, each = L),
+          group = ~ rep_id,
+          color = ~ rep_label
+        )
+  }
+  fig +
+    scale_color_manual(
+      name = "",
+      values = set_names(
+        get_color(c("lh", "dh")),
+        c("theoretical CDF", "sample ECDF")),
+      labels = c(
+        "theoretical CDF" = expression(italic("theoretical CDF")),
+        "sample ECDF" = expression(italic("sample ECDF"))
+      )
+    ) +
+    scale_fill_manual(
+      name = "",
+      values = c("theoretical CDF" = get_color("l"),
+                 "sample ECDF" = NA),
+      labels = c(
+        "theoretical CDF" = expression(italic("theoretical CDF")),
+        "sample ECDF" = expression(italic("sample ECDF"))
+      )
+    ) +
+    yaxis_title(FALSE) +
+    xaxis_title(FALSE) +
+    yaxis_ticks(FALSE) +
+    bayesplot_theme_get()
 }
 
 #' @rdname PPC-intervals
@@ -312,6 +580,49 @@ label_x <- function(x) {
   ))
 }
 
+.ppc_ecdf_intervals_data <- function(y, yrep, pit, K) {
+  if (missing(K)){
+    if (!missing(y)) {
+      K <- length(y)
+    }
+    else if (!missing(pit)) {
+      K <- ncol(pit)
+    }
+    else {
+      K <- ncol(yrep)
+    }
+  }
+  z <- seq(0,1, length.out = K + 1)
+  if (!missing(pit)) {
+    pit <- validate_pit(pit)
+    ecdfs <- t(apply(pit, 1, function(row) ecdf(row)(z)))
+    # work around to adhere to the melt_and_stack-format with only "yrep".
+    ecdfs <- melt_and_stack(ecdfs[1,], ecdfs)
+    ecdfs <- dplyr::filter(ecdfs, !ecdfs$is_y)
+  } else if (missing(y)) {
+    pit <- u_scale(validate_yrep(yrep, yrep[1, ], match_ncols = FALSE))
+    if (nrow(yrep) < 2) {
+      abort(paste("When both 'pit' and 'y' are missing, 'yrep' must include ",
+                  "multiple rows to allow for sample comparison.", sep=""))
+    }
+    ecdfs <- t(apply(pit, 1, function(row) ecdf(row)(z)))
+    # work around to adhere to the melt_and_stack-format with only "yrep".
+    ecdfs <- melt_and_stack(ecdfs[1,], ecdfs)
+    ecdfs <- dplyr::filter(ecdfs, !ecdfs$is_y)
+  } else {
+    y <- validate_y(y)
+    yrep <- validate_yrep(yrep, y, match_ncols = FALSE)
+    pit <- empirical_pit(y, yrep)
+    ecdfs <- ecdf(pit)(z)
+    # work around to adhere to the melt_and_stack-format with only "y" .
+    ecdfs <- melt_and_stack(ecdfs, t(ecdfs))
+    ecdfs <- dplyr::filter(ecdfs, ecdfs$is_y)
+  }
+  ecdfs$rep_id[is.na(ecdfs$rep_id)] <- 0
+  ecdfs
+}
+
+
 # Make intervals or ribbon plot
 #
 # @param data The object returned by .ppc_intervals_data
@@ -419,4 +730,3 @@ label_x <- function(x) {
     labs(y = NULL, x = x_lab %||% expression(italic(x))) +
     bayesplot_theme_get()
 }
-
